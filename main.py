@@ -1,4 +1,5 @@
 
+from app.database.db import init_db
 from app.processing.pipeline import process_emails
 from app.briefing.generator import generate_daily_briefing
 from app.briefing.voice import generate_voice
@@ -11,6 +12,12 @@ def run_jobpulse():
     print("====================================")
 
     try:
+
+        # Step 0: Initialize database
+        print("\nStep 0: Initializing database...")
+
+        init_db()
+
         # Step 1: Process actual Gmail emails
         print("\nStep 1: Processing Gmail emails...")
 
