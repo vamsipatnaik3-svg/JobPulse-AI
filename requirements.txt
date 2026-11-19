@@ -63,3 +63,4 @@ uritemplate==4.2.0
 urllib3==2.8.0
 uvicorn==0.54.0
 websockets==17.4
+psycopg[binary]
