@@ -1,41 +1,76 @@
-'''base64 is required because Gmail returns message body data in Base64 URL-safe encoded form.
 
-We import get_gmail_service() because email fetching requires authentication.'''
+"""
+Gmail email fetcher.
+
+Gmail returns message bodies in Base64 URL-safe encoded format.
+We authenticate using get_gmail_service().
+"""
+
 import base64
+import time
+
+from bs4 import BeautifulSoup
+from googleapiclient.errors import HttpError
 
 from app.gmail.authentication import get_gmail_service
 
-# for extracting email headers
+
+def gmail_api_request(request, description="Gmail API request"):
+    """
+    Execute a Gmail API request with exponential backoff.
+
+    Retries temporary rate-limit and server errors.
+    """
+
+    max_attempts = 5
+
+    for attempt in range(max_attempts):
+
+        try:
+            return request.execute()
+
+        except HttpError as error:
+
+            status_code = error.resp.status
+
+            # Retry rate limits and temporary server errors
+            retryable = (
+                status_code == 429
+                or status_code >= 500
+                or (
+                    status_code == 403
+                    and "rateLimitExceeded" in str(error)
+                )
+            )
+
+            if not retryable or attempt == max_attempts - 1:
+                raise
+
+            wait_time = 2 ** (attempt + 1)
+
+            print(
+                f"{description} temporarily failed "
+                f"(HTTP {status_code}). "
+                f"Retrying in {wait_time} seconds..."
+            )
+
+            time.sleep(wait_time)
+
+
 def get_header(headers, header_name):
     """Extract a specific email header."""
 
     for header in headers:
+
         if header["name"].lower() == header_name.lower():
             return header["value"]
 
     return ""
 
-'''
-Extract email body
-This function extracts the readable content of an email.
-
-Gmail messages can have different MIME structures.
-
-For example:
-- text/plain: Normal text.
-- text/html: HTML-formatted content.
-- multipart/alternative: Multiple representations of the same email.
-- multipart/mixed: Email body plus attachments.
-
-'''
-
-import base64
-from bs4 import BeautifulSoup
-
 
 def decode_email_part(part):
     """
-    Decode the Base64 content of an email part.
+    Decode the Base64 URL-safe content of an email part.
     """
 
     data = part.get("body", {}).get("data")
@@ -53,7 +88,9 @@ def decode_email_part(part):
 
 def extract_email_body(payload):
     """
-    Extract plain-text email content.
+    Extract readable email content.
+
+    Prefer plain text.
     If plain text is unavailable, convert HTML to text.
     """
 
@@ -84,11 +121,11 @@ def extract_email_body(payload):
 
     process_part(payload)
 
-    # Prefer plain text
+    # Prefer plain-text content
     if plain_text:
         return "\n".join(plain_text)
 
-    # Fallback to HTML
+    # Fallback to HTML content
     if html_text:
 
         soup = BeautifulSoup(
@@ -104,58 +141,44 @@ def extract_email_body(payload):
     return ""
 
 
-
 def fetch_emails(max_results=10):
 
     service = get_gmail_service()
 
-    # Search Gmail for recent messages
-    '''
-    Let's understand each parameter.
-    Parameter	Meaning
-    userId="me"	Use the authenticated Gmail account
-    q	Gmail search query
-    maxResults	Maximum number of message IDs to retrieve
-    execute()	Actually sends the API request
-    '''
-    results = service.users().messages().list(
-        userId="me",
-        q="in:anywhere newer_than:2d",
-        maxResults=max_results
-    ).execute()
+    print("\nFetching emails from Gmail...")
 
-    '''
-    The Gmail API initially gives us a list of message references, including IDs.
-    It doesn't return all the complete email content in this list operation.
-    That's why we need another API call.
-    '''
+    # Step 1: Search Gmail for recent messages
+    results = gmail_api_request(
+        service.users().messages().list(
+            userId="me",
+            q="in:anywhere newer_than:2d",
+            maxResults=max_results
+        ),
+        description="Gmail email search"
+    )
+
+    # Gmail list API returns message references, not full email content
     messages = results.get("messages", [])
 
     print(f"\nTotal emails retrieved: {len(messages)}")
 
     email_list = []
 
-    '''
-    For every message ID:
-        1. We call Gmail's message retrieval endpoint.
-        2. We pass the message ID.
-        3. We request the full message.
-        4. We receive the complete message structure.
-        This is important: our implementation makes one list request and then one detail request per email.
+    # Step 2: Retrieve complete details for each email
+    for index, message in enumerate(messages, start=1):
 
-        If we retrieve 100 emails, that's approximately 101 API requests.
+        print(
+            f"Fetching email {index}/{len(messages)}..."
+        )
 
-        We'll optimize pagination and fetching as the project grows.
-    '''
-
-    for message in messages:
-
-        # Retrieve complete email details
-        email_data = service.users().messages().get(
-            userId="me",
-            id=message["id"],
-            format="full"
-        ).execute()
+        email_data = gmail_api_request(
+            service.users().messages().get(
+                userId="me",
+                id=message["id"],
+                format="full"
+            ),
+            description=f"Fetching email {index}"
+        )
 
         payload = email_data.get("payload", {})
         headers = payload.get("headers", [])
@@ -172,15 +195,11 @@ def fetch_emails(max_results=10):
 
         email_list.append(email)
 
+    print(f"\nSuccessfully fetched {len(email_list)} emails.")
+
     return email_list
 
 
-'''
-    This is a very important Python concept.
-    if __name__ == "__main__" means:
-    Execute this section only when the file is run directly as the main program.
-    example:python -m app.gmail.email_fetcher
-'''
 if __name__ == "__main__":
 
     emails = fetch_emails(max_results=10)
